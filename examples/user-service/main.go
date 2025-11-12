@@ -2,6 +2,7 @@ package main
 
 import (
 	"app/libs/core"
+	"app/libs/plugins/logger"
 	"context"
 	"os"
 	"os/signal"
@@ -11,10 +12,10 @@ import (
 
 func main() {
 	config := &core.AppOptions{
-		Name:      "Doffy server",
+		Name:      "User Service API",
 		Mode:      "debug",
 		UseLogger: true,
-		Port:      3037,
+		Port:      8080,
 		Cors: &core.CorsOptions{
 			AllowOrigins:     []string{"*"},
 			AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
@@ -23,7 +24,12 @@ func main() {
 			MaxAge:           86400,
 		},
 	}
+
 	app := core.CreateDoffApp(config)
+
+	// Register plugins
+	app.RegisterPlugin(logger.NewLoggerPlugin())
+	app.RegisterPlugin(NewUserPlugin())
 
 	// Start server in a goroutine
 	go func() {
