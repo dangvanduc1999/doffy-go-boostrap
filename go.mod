@@ -1,4 +1,4 @@
-module app
+module github.com/dangvanduc1999/doffy-go-boostrap
 
 go 1.25.1
 
