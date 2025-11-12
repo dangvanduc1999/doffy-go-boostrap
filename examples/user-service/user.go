@@ -1,8 +1,8 @@
 package main
 
 import (
-	"app/libs/core"
 	"fmt"
+	"github.com/dangvanduc1999/doffy-go-boostrap/libs/core"
 	"net/http"
 
 	"github.com/gin-gonic/gin"

@@ -1,9 +1,9 @@
 package main
 
 import (
-	"app/libs/core"
-	"app/libs/plugins/logger"
 	"context"
+	"github.com/dangvanduc1999/doffy-go-boostrap/libs/core"
+	"github.com/dangvanduc1999/doffy-go-boostrap/libs/plugins/logger"
 	"os"
 	"os/signal"
 	"syscall"

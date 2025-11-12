@@ -1,8 +1,8 @@
 package logger
 
 import (
-	"app/libs/core"
 	"fmt"
+	"github.com/dangvanduc1999/doffy-go-boostrap/libs/core"
 	"time"
 
 	"github.com/gin-gonic/gin"
