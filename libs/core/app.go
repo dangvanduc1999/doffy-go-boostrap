@@ -10,14 +10,15 @@ import (
 )
 
 type AppOptions struct {
-	Name       string         `json:"name"`
-	Mode       string         `json:"mode"`
-	Port       int16          `json:"port"`
-	Cors       any            `json:"cors,omitempty"`
-	UseLogger  bool           `json:"useLogger"`
-	Logger     Logger         `json:"logger,omitempty"`
-	Plugins    []PluginConfig `json:"plugins,omitempty"`
-	ConfigPath string         `json:"configPath,omitempty"`
+	Name          string         `json:"name"`
+	Mode          string         `json:"mode"`
+	Port          int16          `json:"port"`
+	Cors          any            `json:"cors,omitempty"`
+	UseLogger     bool           `json:"useLogger"`
+	Logger        Logger         `json:"logger,omitempty"`
+	Plugins       []PluginConfig `json:"plugins,omitempty"`
+	ConfigPath    string         `json:"configPath,omitempty"`
+	Authenticator any            `json:"authenticator,omitempty"`
 }
 
 type DoffServer interface {
@@ -33,15 +34,17 @@ type config struct {
 }
 
 type DoffApp struct {
-	server        *gin.Engine
-	config        config
-	name          string
-	mode          string
-	logger        Logger
-	container     DIContainer
-	pluginManager *PluginManager
-	httpServer    *http.Server
-	configManager ConfigManager
+	server           *gin.Engine
+	config           config
+	name             string
+	mode             string
+	logger           Logger
+	container        DIContainer         // Root container
+	moduleContainers  map[string]*ModuleContainer  // Module-scoped containers
+	pluginManager    *PluginManager
+	httpServer       *http.Server
+	configManager     ConfigManager
+	decoratorManager  *DecoratorManager       // Decorator API
 }
 
 func (d *DoffApp) initServer() *DoffApp {
@@ -105,9 +108,23 @@ func (d *DoffApp) initDIContainer() *DoffApp {
 		return d.configManager, nil
 	})
 
+	// Register plugin manager in DI container
+	d.container.RegisterSingleton("pluginManager", func(container DIContainer) (interface{}, error) {
+		return d.pluginManager, nil
+	})
+
 	// Set the global service locator
 	SetGlobalContainer(d.container)
 
+	return d
+}
+
+func (d *DoffApp) initAuthenticator(authenticator interface{}) *DoffApp {
+	if d.container != nil {
+		d.container.RegisterSingleton("authenticator", func(container DIContainer) (interface{}, error) {
+			return authenticator, nil
+		})
+	}
 	return d
 }
 
@@ -117,6 +134,18 @@ func (d *DoffApp) Listen() {
 	}
 
 	addr := fmt.Sprintf(":%v", d.config.Port)
+
+	// Execute OnReady hooks (serial, blocks startup)
+	if d.pluginManager != nil {
+		if err := d.pluginManager.GetLifecycleManager().ExecuteOnReady(d); err != nil {
+			d.logger.Infor(&LoggerItem{
+				Event:    "OnReadyError",
+				Messages: "Failed to execute OnReady hooks",
+				Error:    err,
+			})
+			panic(err)
+		}
+	}
 
 	// Initialize all plugins
 	if d.pluginManager != nil {
@@ -164,6 +193,15 @@ func (d *DoffApp) Listen() {
 	}
 	d.logger.Infor(payload)
 
+	// Execute OnListen hooks (async)
+	go func() {
+		// Wait a brief moment to ensure server is actually up
+		time.Sleep(100 * time.Millisecond)
+		if d.pluginManager != nil {
+			d.pluginManager.GetLifecycleManager().ExecuteOnListen(addr)
+		}
+	}()
+
 	if err := d.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		panic(err)
 	}
@@ -180,17 +218,35 @@ func (d *DoffApp) Shutdown(ctx context.Context) error {
 		},
 	})
 
-	// Shutdown plugins
-	if err := d.pluginManager.ShutdownPlugins(); err != nil {
-		d.logger.Infor(&LoggerItem{
-			Event:    "PluginShutdownError",
-			Messages: "Error during plugin shutdown",
-			Error:    err,
-		})
+	// Execute PreClose hooks (notify shutdown)
+	if d.pluginManager != nil {
+		d.pluginManager.GetLifecycleManager().ExecutePreClose(ctx)
 	}
 
 	// Shutdown HTTP server
-	return d.httpServer.Shutdown(ctx)
+	err := d.httpServer.Shutdown(ctx)
+
+	// Execute OnClose hooks (final cleanup)
+	if d.pluginManager != nil {
+		if closeErr := d.pluginManager.GetLifecycleManager().ExecuteOnClose(); closeErr != nil {
+			d.logger.Infor(&LoggerItem{
+				Event:    "OnCloseError",
+				Messages: "Error during OnClose hooks",
+				Error:    closeErr,
+			})
+		}
+	}
+
+	// Shutdown plugins
+	if pluginErr := d.pluginManager.ShutdownPlugins(); pluginErr != nil {
+		d.logger.Infor(&LoggerItem{
+			Event:    "PluginShutdownError",
+			Messages: "Error during plugin shutdown",
+			Error:    pluginErr,
+		})
+	}
+
+	return err
 }
 
 func (d *DoffApp) RegisterPlugin(plugin Plugin) error {
@@ -205,6 +261,11 @@ func (d *DoffApp) GetEngine() *gin.Engine {
 	return d.server
 }
 
+// GetPluginManager returns the plugin manager
+func (d *DoffApp) GetPluginManager() *PluginManager {
+	return d.pluginManager
+}
+
 // GetRouter returns a router helper with DI support
 func (d *DoffApp) GetRouter() *Router {
 	return NewRouter(d.server, d.container)
@@ -217,6 +278,8 @@ func CreateDoffApp(options *AppOptions) DoffServer {
 		config: config{
 			Port: options.Port,
 		},
+		moduleContainers:  make(map[string]*ModuleContainer),
+		decoratorManager:  NewDecoratorManager(),
 	}
 
 	// Initialize configuration first
@@ -227,6 +290,9 @@ func CreateDoffApp(options *AppOptions) DoffServer {
 
 	// Initialize logger
 	app.initLogger(options.UseLogger, options.Logger)
+
+	// Initialize authenticator
+	app.initAuthenticator(options.Authenticator)
 
 	// Initialize server
 	app.initServer()
@@ -243,4 +309,24 @@ func CreateDoffApp(options *AppOptions) DoffServer {
 // GetConfigManager returns the configuration manager
 func (d *DoffApp) GetConfigManager() ConfigManager {
 	return d.configManager
+}
+
+// Decorate registers an instance-level decorator
+func (d *DoffApp) Decorate(name string, value interface{}) error {
+	return d.decoratorManager.Decorate(name, value)
+}
+
+// DecorateRequest registers a request-scoped decorator with default value
+func (d *DoffApp) DecorateRequest(name string, defaultValue interface{}) error {
+	return d.decoratorManager.DecorateRequest(name, defaultValue)
+}
+
+// DecorateReply registers a reply helper function
+func (d *DoffApp) DecorateReply(name string, fn interface{}) error {
+	return d.decoratorManager.DecorateReply(name, fn)
+}
+
+// GetDecoratorManager returns the decorator manager
+func (d *DoffApp) GetDecoratorManager() *DecoratorManager {
+	return d.decoratorManager
 }

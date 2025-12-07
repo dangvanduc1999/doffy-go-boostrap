@@ -2,8 +2,9 @@ package main
 
 import (
 	"fmt"
-	"github.com/dangvanduc1999/doffy-go-boostrap/libs/core"
 	"net/http"
+
+	"github.com/dangvanduc1999/doffy-go-boostrap/libs/core"
 
 	"github.com/gin-gonic/gin"
 )
@@ -153,6 +154,25 @@ func (ctrl *UserController) DeleteUser(c *gin.Context) {
 
 // ListUsers handles GET /users
 func (ctrl *UserController) ListUsers(c *gin.Context) {
+	// Get request container from context
+	if rc, exists := c.Get("requestContainer"); exists {
+		requestContainer := rc.(*core.RequestContainer)
+
+		// Get the successResponse helper from decorators
+		if helper, exists := requestContainer.GetReplyHelper("successResponse"); exists {
+			if successFn, ok := helper.(func(interface{}) map[string]interface{}); ok {
+				users, err := ctrl.userService.ListUsers()
+				if err != nil {
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				c.JSON(http.StatusOK, successFn(gin.H{"users": users}))
+				return
+			}
+		}
+	}
+
+	// Fallback to normal response
 	users, err := ctrl.userService.ListUsers()
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -182,34 +202,49 @@ func (p *UserPlugin) Version() string {
 	return "1.0.0"
 }
 
+// Module returns the module definition for the user plugin
+func (p *UserPlugin) Module() *core.Module {
+	return core.NewModule("user-service", "1.0.0").
+		WithProviders(
+			// User service as FactoryProvider
+			core.NewFactoryProvider("userService", func(container core.DIContainer) (interface{}, error) {
+				return NewUserService(), nil
+			}, core.Singleton),
+			// User controller as FactoryProvider (depends on userService)
+			core.NewFactoryProvider("UserController", func(container core.DIContainer) (interface{}, error) {
+				userService, err := container.Resolve("userService")
+				if err != nil {
+					return nil, err
+				}
+				return NewUserController(userService.(UserService)), nil
+			}, core.Singleton),
+		).
+		WithExports("userService", "UserController").
+		WithPrefix("/api/v1")
+}
+
 // Register registers the user service with the DI container
 func (p *UserPlugin) Register(container core.DIContainer) error {
-	// Register user service
-	if err := container.RegisterSingleton("userService", func(c core.DIContainer) (interface{}, error) {
-		return NewUserService(), nil
-	}); err != nil {
-		return err
+	// Get module definition
+	module := p.Module()
+
+	// Register all providers from module using new provider system
+	for _, provider := range module.Providers {
+		if err := container.RegisterProvider(provider); err != nil {
+			return err
+		}
 	}
 
-	// Register user controller by type name for automatic resolution
-	if err := container.RegisterSingleton("UserController", func(c core.DIContainer) (interface{}, error) {
-		userService, err := c.Resolve("userService")
+	// Register UserController also as userController for backward compatibility
+	userControllerProvider := core.NewFactoryProvider("userController", func(container core.DIContainer) (interface{}, error) {
+		userService, err := container.Resolve("userService")
 		if err != nil {
 			return nil, err
 		}
 		return NewUserController(userService.(UserService)), nil
-	}); err != nil {
-		return err
-	}
+	}, core.Singleton)
 
-	// Also register by the conventional name for backward compatibility
-	return container.RegisterSingleton("userController", func(c core.DIContainer) (interface{}, error) {
-		userService, err := c.Resolve("userService")
-		if err != nil {
-			return nil, err
-		}
-		return NewUserController(userService.(UserService)), nil
-	})
+	return container.RegisterProvider(userControllerProvider)
 }
 
 // Hooks returns the lifecycle hooks for the user plugin
@@ -222,31 +257,35 @@ func (p *UserPlugin) Hooks() []core.LifecycleHook {
 func (p *UserPlugin) Routes(router *gin.Engine) error {
 	// Get the container from context
 	container := core.GlobalLocator.GetContainer()
-	enhancedRouter := core.NewEnhancedRouter(router, container)
 
-	// Register routes using the enhanced router with automatic controller injection
-	api := enhancedRouter.Group("/api/v1")
-	{
-		api.GET("/users", func(c *gin.Context, ctrl *UserController) {
-			ctrl.ListUsers(c)
-		})
+	// Create enhanced router with module prefix from module definition
+	// The module already has WithPrefix("/api/v1") set
+	enhancedRouter := core.NewEnhancedRouterWithPrefix(router, container, "/api/v1")
 
-		api.GET("/users/:id", func(c *gin.Context, ctrl *UserController) {
-			ctrl.GetUser(c)
-		})
+	// Register routes using relative paths - they'll be automatically prefixed with /api/v1
+	isAuthFalse := false
+	enhancedRouter.GET(core.RouteConfig{
+		Path:   "users",
+		IsAuth: &isAuthFalse,
+	}, func(c *gin.Context, ctrl *UserController) {
+		ctrl.ListUsers(c)
+	})
 
-		api.POST("/users", func(c *gin.Context, ctrl *UserController) {
-			ctrl.CreateUser(c)
-		})
+	enhancedRouter.GET(core.RouteConfig{Path: "users/:id"}, func(c *gin.Context, ctrl *UserController) {
+		ctrl.GetUser(c)
+	})
 
-		api.PUT("/users/:id", func(c *gin.Context, ctrl *UserController) {
-			ctrl.UpdateUser(c)
-		})
+	enhancedRouter.POST(core.RouteConfig{Path: "users"}, func(c *gin.Context, ctrl *UserController) {
+		ctrl.CreateUser(c)
+	})
 
-		api.DELETE("/users/:id", func(c *gin.Context, ctrl *UserController) {
-			ctrl.DeleteUser(c)
-		})
-	}
+	enhancedRouter.PUT(core.RouteConfig{Path: "users/:id"}, func(c *gin.Context, ctrl *UserController) {
+		ctrl.UpdateUser(c)
+	})
+
+	enhancedRouter.DELETE(core.RouteConfig{Path: "users/:id"}, func(c *gin.Context, ctrl *UserController) {
+		ctrl.DeleteUser(c)
+	})
 
 	return nil
 }

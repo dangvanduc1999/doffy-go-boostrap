@@ -2,12 +2,14 @@ package main
 
 import (
 	"context"
-	"github.com/dangvanduc1999/doffy-go-boostrap/libs/core"
-	"github.com/dangvanduc1999/doffy-go-boostrap/libs/plugins/logger"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/dangvanduc1999/doffy-go-boostrap/libs/core"
+	"github.com/dangvanduc1999/doffy-go-boostrap/libs/plugins/logger"
+	"github.com/dangvanduc1999/doffy-go-boostrap/libs/plugins/request"
 )
 
 func main() {
@@ -27,8 +29,22 @@ func main() {
 
 	app := core.CreateDoffApp(config)
 
+	// Register global decorators - need to cast to DoffApp to access Decorate methods
+	if doffApp, ok := app.(*core.DoffApp); ok {
+		doffApp.Decorate("apiVersion", "v1")
+		doffApp.DecorateRequest("requestTimeout", 30) // seconds
+		doffApp.DecorateReply("successResponse", func(data interface{}) map[string]interface{} {
+			return map[string]interface{}{
+				"success": true,
+				"data":    data,
+				"version": "v1",
+			}
+		})
+	}
+
 	// Register plugins
 	app.RegisterPlugin(logger.NewLoggerPlugin())
+	app.RegisterPlugin(request.NewRequestAuthentication())
 	app.RegisterPlugin(NewUserPlugin())
 
 	// Start server in a goroutine

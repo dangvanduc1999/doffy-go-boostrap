@@ -2,8 +2,9 @@ package logger
 
 import (
 	"fmt"
-	"github.com/dangvanduc1999/doffy-go-boostrap/libs/core"
 	"time"
+
+	"github.com/dangvanduc1999/doffy-go-boostrap/libs/core"
 
 	"github.com/gin-gonic/gin"
 )
@@ -94,7 +95,6 @@ func NewLoggerHook() *LoggerHook {
 func (h *LoggerHook) OnRequest(c *gin.Context) {
 	// Store start time in context
 	c.Set("start_time", time.Now())
-	c.Next()
 }
 
 // PreHandler implements the LifecycleHook interface

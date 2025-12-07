@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -24,21 +25,36 @@ type Factory func(container DIContainer) (interface{}, error)
 
 // ServiceDefinition holds information about a registered service
 type ServiceDefinition struct {
-	Factory  Factory
-	Lifetime Lifetime
-	Instance interface{} // For singleton instances
+	Provider Provider  // Changed from Factory
+	Instance interface{} // Cached singleton instance
 }
 
 // DIContainer manages service registration and resolution
 type DIContainer interface {
+	// Legacy methods for backward compatibility
 	Register(name string, factory Factory, lifetime Lifetime) error
 	RegisterSingleton(name string, factory Factory) error
 	RegisterTransient(name string, factory Factory) error
 	RegisterScoped(name string, factory Factory) error
+
+	// New provider-based methods
+	RegisterProvider(provider Provider) error
+	RegisterProviderSingleton(provider Provider) error
+	RegisterProviderTransient(provider Provider) error
+	RegisterProviderScoped(provider Provider) error
+
+	// Resolution methods
 	Resolve(name string) (interface{}, error)
+	ResolveWithContext(name string, ctx context.Context) (interface{}, error)
 	ResolveAs(name string, target interface{}) error
+	ResolveAsWithContext(name string, ctx context.Context, target interface{}) error
+
+	// Utility methods
 	Has(name string) bool
 	CreateScope() DIContainer
+
+	// Module-scoped container creation
+	CreateModuleScope(module *Module) DIContainer
 }
 
 // diContainer is the default implementation of DIContainer
@@ -55,25 +71,54 @@ func NewDIContainer() DIContainer {
 	}
 }
 
-// Register registers a service with the specified lifetime
+// Register registers a service with the specified lifetime (backward compatibility)
 func (c *diContainer) Register(name string, factory Factory, lifetime Lifetime) error {
+	// Wrap Factory in FactoryProvider for backward compatibility
+	provider := &FactoryProvider{
+		Name:     name,
+		Factory:  factory,
+		Lifetime: lifetime,
+	}
+	return c.RegisterProvider(provider)
+}
+
+// RegisterProvider registers a provider (new primary method)
+func (c *diContainer) RegisterProvider(provider Provider) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	name := provider.GetName()
 	if _, exists := c.services[name]; exists {
 		return fmt.Errorf("service '%s' is already registered", name)
 	}
 
-	if factory == nil {
-		return fmt.Errorf("factory cannot be nil for service '%s'", name)
+	if provider == nil {
+		return fmt.Errorf("provider cannot be nil")
 	}
 
 	c.services[name] = &ServiceDefinition{
-		Factory:  factory,
-		Lifetime: lifetime,
+		Provider: provider,
 	}
 
 	return nil
+}
+
+// RegisterProviderSingleton registers a singleton provider
+func (c *diContainer) RegisterProviderSingleton(provider Provider) error {
+	// Create a wrapper provider with Singleton lifetime
+	return c.RegisterProvider(&singletonLifetimeWrapper{Provider: provider})
+}
+
+// RegisterProviderTransient registers a transient provider
+func (c *diContainer) RegisterProviderTransient(provider Provider) error {
+	// Create a wrapper provider with Transient lifetime
+	return c.RegisterProvider(&transientLifetimeWrapper{Provider: provider})
+}
+
+// RegisterProviderScoped registers a scoped provider
+func (c *diContainer) RegisterProviderScoped(provider Provider) error {
+	// Create a wrapper provider with Scoped lifetime
+	return c.RegisterProvider(&scopedLifetimeWrapper{Provider: provider})
 }
 
 // RegisterSingleton registers a singleton service
@@ -93,6 +138,11 @@ func (c *diContainer) RegisterScoped(name string, factory Factory) error {
 
 // Resolve resolves a service by name
 func (c *diContainer) Resolve(name string) (interface{}, error) {
+	return c.ResolveWithContext(name, context.Background())
+}
+
+// ResolveWithContext enables async resolution
+func (c *diContainer) ResolveWithContext(name string, ctx context.Context) (interface{}, error) {
 	c.mu.RLock()
 	service, exists := c.services[name]
 	c.mu.RUnlock()
@@ -100,19 +150,24 @@ func (c *diContainer) Resolve(name string) (interface{}, error) {
 	if !exists {
 		// Check parent container if this is a scoped container
 		if c.parent != nil {
+			if parentWithCtx, ok := c.parent.(*diContainer); ok {
+				return parentWithCtx.ResolveWithContext(name, ctx)
+			}
 			return c.parent.Resolve(name)
 		}
 		return nil, fmt.Errorf("service '%s' is not registered", name)
 	}
 
-	switch service.Lifetime {
+	provider := service.Provider
+
+	switch provider.GetLifetime() {
 	case Singleton:
 		if service.Instance != nil {
 			return service.Instance, nil
 		}
 
 		// Create singleton instance
-		instance, err := service.Factory(c)
+		instance, err := provider.Resolve(c, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create singleton service '%s': %w", name, err)
 		}
@@ -125,11 +180,11 @@ func (c *diContainer) Resolve(name string) (interface{}, error) {
 		return instance, nil
 
 	case Transient:
-		return service.Factory(c)
+		return provider.Resolve(c, ctx)
 
 	case Scoped:
 		// For scoped services, always create a new instance in the current scope
-		return service.Factory(c)
+		return provider.Resolve(c, ctx)
 
 	default:
 		return nil, fmt.Errorf("unknown lifetime for service '%s'", name)
@@ -138,7 +193,12 @@ func (c *diContainer) Resolve(name string) (interface{}, error) {
 
 // ResolveAs resolves a service and assigns it to the target pointer
 func (c *diContainer) ResolveAs(name string, target interface{}) error {
-	instance, err := c.Resolve(name)
+	return c.ResolveAsWithContext(name, context.Background(), target)
+}
+
+// ResolveAsWithContext resolves a service with context and assigns it to the target pointer
+func (c *diContainer) ResolveAsWithContext(name string, ctx context.Context, target interface{}) error {
+	instance, err := c.ResolveWithContext(name, ctx)
 	if err != nil {
 		return err
 	}
@@ -176,4 +236,35 @@ func (c *diContainer) CreateScope() DIContainer {
 		services: make(map[string]*ServiceDefinition),
 		parent:   c,
 	}
+}
+
+// Lifetime wrapper providers for RegisterProviderSingleton/Transient/Scoped
+
+type singletonLifetimeWrapper struct {
+	Provider
+}
+
+func (w *singletonLifetimeWrapper) GetLifetime() Lifetime {
+	return Singleton
+}
+
+type transientLifetimeWrapper struct {
+	Provider
+}
+
+func (w *transientLifetimeWrapper) GetLifetime() Lifetime {
+	return Transient
+}
+
+type scopedLifetimeWrapper struct {
+	Provider
+}
+
+func (w *scopedLifetimeWrapper) GetLifetime() Lifetime {
+	return Scoped
+}
+
+// CreateModuleScope creates a new ModuleContainer for the given module
+func (c *diContainer) CreateModuleScope(module *Module) DIContainer {
+	return NewModuleContainer(module, c)
 }

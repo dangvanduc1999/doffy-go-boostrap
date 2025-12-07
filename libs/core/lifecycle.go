@@ -54,13 +54,15 @@ func (h *LifecycleHookFunc) OnError(c *gin.Context, err error) {
 
 // LifecycleManager manages the execution of lifecycle hooks
 type LifecycleManager struct {
-	hooks []LifecycleHook
+	hooks    []LifecycleHook
+	appHooks []ApplicationHook
 }
 
 // NewLifecycleManager creates a new lifecycle manager
 func NewLifecycleManager() *LifecycleManager {
 	return &LifecycleManager{
-		hooks: make([]LifecycleHook, 0),
+		hooks:    make([]LifecycleHook, 0),
+		appHooks: make([]ApplicationHook, 0),
 	}
 }
 
@@ -133,4 +135,130 @@ func NewOnErrorHook(fn func(c *gin.Context, err error)) LifecycleHook {
 	return &LifecycleHookFunc{
 		OnErrorFunc: fn,
 	}
+}
+
+// ApplicationHook defines the interface for application-level lifecycle hooks
+type ApplicationHook interface {
+	// OnRoute is called when a route is registered
+	OnRoute(config *RouteConfig)
+	// OnRegister is called when a plugin is registered
+	OnRegister(plugin interface{})
+	// OnReady is called before the server starts listening
+	OnReady(app interface{}) error
+	// OnListen is called after the server starts listening
+	OnListen(addr string)
+	// PreClose is called before the server shuts down
+	PreClose(ctx interface{})
+	// OnClose is called after the server shuts down
+	OnClose() error
+}
+
+// ApplicationHookFunc is a helper type to create application hooks from functions
+type ApplicationHookFunc struct {
+	OnRouteFunc    func(config *RouteConfig)
+	OnRegisterFunc func(plugin interface{})
+	OnReadyFunc    func(app interface{}) error
+	OnListenFunc   func(addr string)
+	PreCloseFunc   func(ctx interface{})
+	OnCloseFunc    func() error
+}
+
+// OnRoute implements ApplicationHook
+func (h *ApplicationHookFunc) OnRoute(config *RouteConfig) {
+	if h.OnRouteFunc != nil {
+		h.OnRouteFunc(config)
+	}
+}
+
+// OnRegister implements ApplicationHook
+func (h *ApplicationHookFunc) OnRegister(plugin interface{}) {
+	if h.OnRegisterFunc != nil {
+		h.OnRegisterFunc(plugin)
+	}
+}
+
+// OnReady implements ApplicationHook
+func (h *ApplicationHookFunc) OnReady(app interface{}) error {
+	if h.OnReadyFunc != nil {
+		return h.OnReadyFunc(app)
+	}
+	return nil
+}
+
+// OnListen implements ApplicationHook
+func (h *ApplicationHookFunc) OnListen(addr string) {
+	if h.OnListenFunc != nil {
+		h.OnListenFunc(addr)
+	}
+}
+
+// PreClose implements ApplicationHook
+func (h *ApplicationHookFunc) PreClose(ctx interface{}) {
+	if h.PreCloseFunc != nil {
+		h.PreCloseFunc(ctx)
+	}
+}
+
+// OnClose implements ApplicationHook
+func (h *ApplicationHookFunc) OnClose() error {
+	if h.OnCloseFunc != nil {
+		return h.OnCloseFunc()
+	}
+	return nil
+}
+
+// AddAppHook adds an application lifecycle hook
+func (lm *LifecycleManager) AddAppHook(hook ApplicationHook) {
+	if hook != nil {
+		lm.appHooks = append(lm.appHooks, hook)
+	}
+}
+
+// ExecuteOnRoute executes all OnRoute hooks
+func (lm *LifecycleManager) ExecuteOnRoute(config *RouteConfig) {
+	for _, hook := range lm.appHooks {
+		hook.OnRoute(config)
+	}
+}
+
+// ExecuteOnRegister executes all OnRegister hooks
+func (lm *LifecycleManager) ExecuteOnRegister(plugin interface{}) {
+	for _, hook := range lm.appHooks {
+		hook.OnRegister(plugin)
+	}
+}
+
+// ExecuteOnReady executes all OnReady hooks
+func (lm *LifecycleManager) ExecuteOnReady(app interface{}) error {
+	for _, hook := range lm.appHooks {
+		if err := hook.OnReady(app); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ExecuteOnListen executes all OnListen hooks
+func (lm *LifecycleManager) ExecuteOnListen(addr string) {
+	for _, hook := range lm.appHooks {
+		hook.OnListen(addr)
+	}
+}
+
+// ExecutePreClose executes all PreClose hooks
+func (lm *LifecycleManager) ExecutePreClose(ctx interface{}) {
+	for _, hook := range lm.appHooks {
+		hook.PreClose(ctx)
+	}
+}
+
+// ExecuteOnClose executes all OnClose hooks
+func (lm *LifecycleManager) ExecuteOnClose() error {
+	var lastErr error
+	for _, hook := range lm.appHooks {
+		if err := hook.OnClose(); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
 }

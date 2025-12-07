@@ -7,7 +7,15 @@ import (
 // RouteHandler defines a handler function that has access to the DI container
 type RouteHandler func(c *gin.Context, container DIContainer)
 
-// Router provides helper methods for registering routes with DI support
+// RouteConfig contains configuration options for a route
+type RouteConfig struct {
+	Path            string
+	IsAuth          *bool
+	SchemaValidator interface{}
+	Options         map[string]interface{}
+}
+
+// Router wraps gin.Engine and provides dependency injection support
 type Router struct {
 	engine    *gin.Engine
 	container DIContainer
@@ -30,43 +38,72 @@ func (r *Router) Group(relativePath string, handlers ...gin.HandlerFunc) *Router
 }
 
 // GET registers a GET route
-func (r *Router) GET(path string, handler RouteHandler) {
-	r.engine.GET(path, r.wrapHandler(handler))
+func (r *Router) GET(config RouteConfig, handler RouteHandler) {
+	r.triggerOnRoute(&config)
+	r.engine.GET(config.Path, r.wrapHandler(handler))
 }
 
 // POST registers a POST route
-func (r *Router) POST(path string, handler RouteHandler) {
-	r.engine.POST(path, r.wrapHandler(handler))
+func (r *Router) POST(config RouteConfig, handler RouteHandler) {
+	r.triggerOnRoute(&config)
+	r.engine.POST(config.Path, r.wrapHandler(handler))
 }
 
 // PUT registers a PUT route
-func (r *Router) PUT(path string, handler RouteHandler) {
-	r.engine.PUT(path, r.wrapHandler(handler))
+func (r *Router) PUT(config RouteConfig, handler RouteHandler) {
+	r.triggerOnRoute(&config)
+	r.engine.PUT(config.Path, r.wrapHandler(handler))
 }
 
 // PATCH registers a PATCH route
-func (r *Router) PATCH(path string, handler RouteHandler) {
-	r.engine.PATCH(path, r.wrapHandler(handler))
+func (r *Router) PATCH(config RouteConfig, handler RouteHandler) {
+	r.triggerOnRoute(&config)
+	r.engine.PATCH(config.Path, r.wrapHandler(handler))
 }
 
 // DELETE registers a DELETE route
-func (r *Router) DELETE(path string, handler RouteHandler) {
-	r.engine.DELETE(path, r.wrapHandler(handler))
+func (r *Router) DELETE(config RouteConfig, handler RouteHandler) {
+	r.triggerOnRoute(&config)
+	r.engine.DELETE(config.Path, r.wrapHandler(handler))
 }
 
 // OPTIONS registers an OPTIONS route
-func (r *Router) OPTIONS(path string, handler RouteHandler) {
-	r.engine.OPTIONS(path, r.wrapHandler(handler))
+func (r *Router) OPTIONS(config RouteConfig, handler RouteHandler) {
+	r.triggerOnRoute(&config)
+	r.engine.OPTIONS(config.Path, r.wrapHandler(handler))
 }
 
 // HEAD registers a HEAD route
-func (r *Router) HEAD(path string, handler RouteHandler) {
-	r.engine.HEAD(path, r.wrapHandler(handler))
+func (r *Router) HEAD(config RouteConfig, handler RouteHandler) {
+	r.triggerOnRoute(&config)
+	r.engine.HEAD(config.Path, r.wrapHandler(handler))
 }
 
 // Any registers a route that matches all HTTP methods
-func (r *Router) Any(path string, handler RouteHandler) {
-	r.engine.Any(path, r.wrapHandler(handler))
+func (r *Router) Any(config RouteConfig, handler RouteHandler) {
+	r.triggerOnRoute(&config)
+	r.engine.Any(config.Path, r.wrapHandler(handler))
+}
+
+// buildOptions converts RouteConfig to options map
+func (r *Router) buildOptions(config RouteConfig) map[string]interface{} {
+	options := make(map[string]interface{})
+
+	if config.Options != nil {
+		for k, v := range config.Options {
+			options[k] = v
+		}
+	}
+
+	if config.IsAuth != nil {
+		options["isAuth"] = *config.IsAuth
+	}
+
+	if config.SchemaValidator != nil {
+		options["schema"] = config.SchemaValidator
+	}
+
+	return options
 }
 
 // Static registers a static file server
@@ -104,6 +141,15 @@ func (r *Router) wrapHandler(handler RouteHandler) gin.HandlerFunc {
 	}
 }
 
+// triggerOnRoute triggers the OnRoute hook
+func (r *Router) triggerOnRoute(config *RouteConfig) {
+	if pm, err := r.container.Resolve("pluginManager"); err == nil {
+		if pluginManager, ok := pm.(*PluginManager); ok {
+			pluginManager.ExecuteOnRoute(config)
+		}
+	}
+}
+
 // RouterGroup provides helper methods for route groups
 type RouterGroup struct {
 	group  *gin.RouterGroup
@@ -119,43 +165,51 @@ func (rg *RouterGroup) Group(relativePath string, handlers ...gin.HandlerFunc) *
 }
 
 // GET registers a GET route in the group
-func (rg *RouterGroup) GET(path string, handler RouteHandler) {
-	rg.group.GET(path, rg.router.wrapHandler(handler))
+func (rg *RouterGroup) GET(config RouteConfig, handler RouteHandler) {
+	rg.router.triggerOnRoute(&config)
+	rg.group.GET(config.Path, rg.router.wrapHandler(handler))
 }
 
 // POST registers a POST route in the group
-func (rg *RouterGroup) POST(path string, handler RouteHandler) {
-	rg.group.POST(path, rg.router.wrapHandler(handler))
+func (rg *RouterGroup) POST(config RouteConfig, handler RouteHandler) {
+	rg.router.triggerOnRoute(&config)
+	rg.group.POST(config.Path, rg.router.wrapHandler(handler))
 }
 
 // PUT registers a PUT route in the group
-func (rg *RouterGroup) PUT(path string, handler RouteHandler) {
-	rg.group.PUT(path, rg.router.wrapHandler(handler))
+func (rg *RouterGroup) PUT(config RouteConfig, handler RouteHandler) {
+	rg.router.triggerOnRoute(&config)
+	rg.group.PUT(config.Path, rg.router.wrapHandler(handler))
 }
 
 // PATCH registers a PATCH route in the group
-func (rg *RouterGroup) PATCH(path string, handler RouteHandler) {
-	rg.group.PATCH(path, rg.router.wrapHandler(handler))
+func (rg *RouterGroup) PATCH(config RouteConfig, handler RouteHandler) {
+	rg.router.triggerOnRoute(&config)
+	rg.group.PATCH(config.Path, rg.router.wrapHandler(handler))
 }
 
 // DELETE registers a DELETE route in the group
-func (rg *RouterGroup) DELETE(path string, handler RouteHandler) {
-	rg.group.DELETE(path, rg.router.wrapHandler(handler))
+func (rg *RouterGroup) DELETE(config RouteConfig, handler RouteHandler) {
+	rg.router.triggerOnRoute(&config)
+	rg.group.DELETE(config.Path, rg.router.wrapHandler(handler))
 }
 
 // OPTIONS registers an OPTIONS route in the group
-func (rg *RouterGroup) OPTIONS(path string, handler RouteHandler) {
-	rg.group.OPTIONS(path, rg.router.wrapHandler(handler))
+func (rg *RouterGroup) OPTIONS(config RouteConfig, handler RouteHandler) {
+	rg.router.triggerOnRoute(&config)
+	rg.group.OPTIONS(config.Path, rg.router.wrapHandler(handler))
 }
 
 // HEAD registers a HEAD route in the group
-func (rg *RouterGroup) HEAD(path string, handler RouteHandler) {
-	rg.group.HEAD(path, rg.router.wrapHandler(handler))
+func (rg *RouterGroup) HEAD(config RouteConfig, handler RouteHandler) {
+	rg.router.triggerOnRoute(&config)
+	rg.group.HEAD(config.Path, rg.router.wrapHandler(handler))
 }
 
 // Any registers a route that matches all HTTP methods in the group
-func (rg *RouterGroup) Any(path string, handler RouteHandler) {
-	rg.group.Any(path, rg.router.wrapHandler(handler))
+func (rg *RouterGroup) Any(config RouteConfig, handler RouteHandler) {
+	rg.router.triggerOnRoute(&config)
+	rg.group.Any(config.Path, rg.router.wrapHandler(handler))
 }
 
 // Static registers a static file server in the group
